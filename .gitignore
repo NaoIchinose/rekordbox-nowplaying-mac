@@ -1,0 +1,7 @@
+# 個人設定・実機データは公開しない
+config.json
+midi_map.json
+artwork_cache.json
+__pycache__/
+*.pyc
+.DS_Store
