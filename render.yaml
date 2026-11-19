@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: rekordbox-nowplaying-relay
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 relay.py $PORT
+    envVars:
+      - key: RELAY_TOKEN
+        sync: false
