@@ -2,99 +2,331 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>NOW PLAYING</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NOW PLAYING — Rekordbox Relay</title>
 <style>
-  html, body { margin:0; padding:0; background:transparent; overflow:hidden;
-    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; }
-  .card {
-    position:absolute; left:32px;
-    display:flex; align-items:center; gap:16px;
-    background:rgba(10,10,16,.78); border:1px solid rgba(255,255,255,.18);
-    border-radius:14px; padding:16px 22px 16px 18px; color:#fff;
-    box-shadow:0 8px 30px rgba(0,0,0,.45);
-    opacity:0; transform:translateY(8px);
-    transition:opacity .45s ease, transform .45s ease;
-    max-width:70vw;
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+    color:#fff; min-height:100dvh; overflow-x:hidden;
+    background:
+      radial-gradient(1100px 600px at 85% -10%, rgba(122,58,180,.35), transparent 60%),
+      radial-gradient(900px 550px at -10% 105%, rgba(255,140,66,.22), transparent 60%),
+      radial-gradient(700px 500px at 55% 115%, rgba(40,110,255,.18), transparent 60%),
+      linear-gradient(160deg, #0a0a14 0%, #07070d 55%, #0b0714 100%);
+    background-color:#07070d;
   }
-  .card.show { opacity:1; transform:translateY(0); }
-  #nowCard { bottom:32px; }
-  #nextCard { bottom:158px; padding:10px 18px 10px 14px; background:rgba(10,10,16,.62); }
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.5;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 56px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 56px);
+    mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 78%);
+    -webkit-mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 78%);
+  }
+  .orb { position:fixed; border-radius:50%; filter:blur(70px); pointer-events:none; z-index:0; }
+  .orb.a { width:420px; height:420px; right:-120px; top:-140px; background:rgba(150,64,255,.28); animation:drift 16s ease-in-out infinite alternate; }
+  .orb.b { width:360px; height:360px; left:-120px; bottom:-140px; background:rgba(255,140,66,.20); animation:drift 20s ease-in-out infinite alternate-reverse; }
+  @keyframes drift { from { transform:translate(0,0) scale(1); } to { transform:translate(-40px,30px) scale(1.12); } }
+
+  .stage {
+    position:relative; z-index:1; max-width:920px; margin:0 auto;
+    padding:26px 22px 40px; display:flex; flex-direction:column; gap:18px;
+    min-height:100dvh;
+  }
+  header.top {
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  .brand { font-size:12px; letter-spacing:.34em; color:rgba(255,255,255,.65); font-weight:600; }
+  .brand b { color:#fff; }
+  .live {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:11px; letter-spacing:.18em; font-weight:700; color:#ff5d5d;
+    border:1px solid rgba(255,93,93,.45); border-radius:999px; padding:4px 11px;
+    background:rgba(255,93,93,.08);
+  }
+  .live .dot { width:8px; height:8px; border-radius:50%; background:#ff5d5d; animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(255,93,93,.55);} 55% { box-shadow:0 0 0 7px rgba(255,93,93,0);} }
+  .live.off { color:rgba(255,255,255,.45); border-color:rgba(255,255,255,.2); background:rgba(255,255,255,.04); }
+  .live.off .dot { background:rgba(255,255,255,.4); animation:none; }
+  .spacer { flex:1; }
+  .conn { font-size:11px; color:rgba(255,255,255,.45); letter-spacing:.06em; }
+  .clock { font-size:12px; color:rgba(255,255,255,.55); font-variant-numeric:tabular-nums; letter-spacing:.08em; }
+
+  #roomBar { display:none; align-items:center; gap:8px; flex-wrap:wrap; }
+  #roomBar.show { display:flex; }
+  #roomBar .rbLabel { font-size:10px; letter-spacing:.28em; color:rgba(255,255,255,.45); font-weight:700; margin-right:2px; }
+  .roomChip {
+    font:inherit; font-size:12px; font-weight:700; letter-spacing:.06em; cursor:pointer;
+    color:rgba(255,255,255,.75); background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:5px 13px;
+    display:inline-flex; align-items:center; gap:7px;
+  }
+  .roomChip .rdot { width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.3); }
+  .roomChip.live .rdot { background:#39d98a; box-shadow:0 0 8px rgba(57,217,138,.8); }
+  .roomChip.active { color:#0b0b12; background:linear-gradient(90deg,#ffb86b,#ff8c42); border-color:transparent; }
+  .roomChip.active .rdot { background:#0b0b12; box-shadow:none; }
+
+  .glass {
+    background:linear-gradient(150deg, rgba(255,255,255,.085), rgba(255,255,255,.035));
+    border:1px solid rgba(255,255,255,.14);
+    border-radius:20px;
+    box-shadow:0 18px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+
+  /* NOW card */
+  #nowCard { padding:22px; display:flex; gap:22px; align-items:stretch;
+    opacity:0; transform:translateY(10px); transition:opacity .5s ease, transform .5s ease; }
+  #nowCard.show { opacity:1; transform:translateY(0); }
   .art {
-    width:84px; height:84px; border-radius:10px; flex:0 0 auto; position:relative; overflow:hidden;
+    width:148px; height:148px; border-radius:16px; flex:0 0 auto; position:relative; overflow:hidden;
     background:linear-gradient(135deg,#3a3f6b,#7a3a6b);
     display:flex; align-items:center; justify-content:center;
-    font-size:30px; color:rgba(255,255,255,.85);
+    font-size:52px; color:rgba(255,255,255,.85);
+    box-shadow:0 10px 30px rgba(0,0,0,.45);
   }
   .art img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:none; }
-  .work { font-size:12px; color:#8fd3ff; margin-top:2px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #nextCard .art { width:52px; height:52px; font-size:20px; border-radius:8px; }
-  .label { font-size:11px; letter-spacing:.28em; color:#ffb86b; margin-bottom:4px; }
-  #nextCard .label { color:#8fd3ff; }
-  #title { font-size:26px; font-weight:700; line-height:1.25;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #nextTitle { font-size:18px; font-weight:700; line-height:1.25;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .artist { font-size:16px; color:rgba(255,255,255,.82); margin-top:2px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #nextCard .artist { font-size:13px; }
-  .meta { font-size:12px; color:rgba(255,255,255,.55); margin-top:4px; }
-  #progressBar { height:4px; background:rgba(255,255,255,.16); border-radius:2px; margin-top:8px; width:340px; max-width:60vw; }
-  #progressFill { height:100%; background:#ffb86b; border-radius:2px; width:0%; transition:width .8s linear; }
-  #faders {
-    position:absolute; left:32px; bottom:240px; display:none; gap:14px;
-    color:rgba(255,255,255,.75); font-size:10px; letter-spacing:.08em;
+  .nowBody { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .labelRow { display:flex; align-items:center; gap:10px; }
+  .label { font-size:11px; letter-spacing:.3em; color:#ffb86b; font-weight:700; }
+  .chip {
+    font-size:10px; letter-spacing:.12em; font-weight:700; color:#0b0b12;
+    background:linear-gradient(90deg,#ffb86b,#ff8c42); border-radius:999px; padding:3px 9px;
   }
-  .fader { width:90px; }
-  .fader .bar { height:5px; background:rgba(255,255,255,.18); border-radius:3px; margin-top:3px; }
-  .fader .fill { height:100%; background:#ffb86b; border-radius:3px; width:0%; }
-  #crossFill { background:#8fd3ff; }
+  .chip.blue { background:linear-gradient(90deg,#8fd3ff,#5aa8ff); }
+  .eq { display:none; align-items:flex-end; gap:2.5px; height:14px; margin-left:2px; }
+  .eq.on { display:inline-flex; }
+  .eq i { width:3.5px; background:#ffb86b; border-radius:2px; animation:eqb 0.9s ease-in-out infinite; }
+  .eq i:nth-child(2) { animation-delay:.22s; } .eq i:nth-child(3) { animation-delay:.45s; } .eq i:nth-child(4) { animation-delay:.12s; }
+  @keyframes eqb { 0%,100% { height:5px; } 50% { height:14px; } }
+  #title { font-size:clamp(24px, 4.6vw, 36px); font-weight:800; line-height:1.22; margin-top:8px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:.01em; }
+  #artist { font-size:clamp(15px, 2.6vw, 19px); color:rgba(255,255,255,.85); margin-top:3px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #work { font-size:12.5px; color:#8fd3ff; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .metaRow { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .metaChip {
+    font-size:11px; letter-spacing:.08em; color:rgba(255,255,255,.8);
+    border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.05);
+    border-radius:999px; padding:4px 10px; font-variant-numeric:tabular-nums;
+  }
+  .progressWrap { margin-top:auto; padding-top:16px; }
+  #progressBar { height:6px; background:rgba(255,255,255,.14); border-radius:3px; overflow:hidden; }
+  #progressFill { height:100%; width:0%; border-radius:3px;
+    background:linear-gradient(90deg,#ffb86b,#ff8c42,#ff5d8f);
+    transition:width .9s linear; box-shadow:0 0 12px rgba(255,150,80,.55); }
+  .times { display:flex; justify-content:space-between; margin-top:7px;
+    font-size:12px; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; letter-spacing:.05em; }
+
+  /* idle panel */
+  #idleCard { padding:34px 22px; text-align:center; display:none; }
+  #idleCard.show { display:block; }
+  #idleCard .big { font-size:40px; opacity:.85; }
+  #idleCard .t1 { font-size:17px; font-weight:700; letter-spacing:.22em; margin-top:10px; }
+  #idleCard .t2 { font-size:12.5px; color:rgba(255,255,255,.55); margin-top:8px; line-height:1.7; }
+
+  /* NEXT card */
+  #nextCard { padding:14px 18px; display:flex; gap:16px; align-items:center;
+    opacity:0; transform:translateY(8px); transition:opacity .5s ease, transform .5s ease; }
+  #nextCard.show { opacity:1; transform:translateY(0); }
+  #nextCard .art { width:58px; height:58px; border-radius:12px; font-size:22px; }
+  #nextCard .label { color:#8fd3ff; }
+  #nextTitle { font-size:18px; font-weight:700; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #nextArtist { font-size:13px; color:rgba(255,255,255,.75); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #nextDur { margin-left:auto; font-size:13px; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; flex:0 0 auto; }
+
+  /* mixer strip */
+  #mixer { padding:16px 20px 18px; display:none; }
+  #mixer.show { display:block; }
+  #mixer .mLabel { font-size:10px; letter-spacing:.3em; color:rgba(255,255,255,.5); font-weight:700; margin-bottom:12px; }
+  .faders { display:flex; gap:22px; flex-wrap:wrap; }
+  .fader { flex:1; min-width:130px; }
+  .fader .fTop { display:flex; justify-content:space-between; font-size:11px; letter-spacing:.14em; color:rgba(255,255,255,.75); }
+  .fader .fVal { color:#ffb86b; font-variant-numeric:tabular-nums; }
+  .fader .bar { height:7px; background:rgba(255,255,255,.13); border-radius:4px; margin-top:6px; overflow:hidden; }
+  .fader .fill { height:100%; width:0%; border-radius:4px; background:linear-gradient(90deg,#ffb86b,#ff8c42); transition:width .25s ease; }
+  #crossFill { background:linear-gradient(90deg,#8fd3ff,#5aa8ff); }
+
+  footer.note { margin-top:auto; text-align:center; font-size:11px; color:rgba(255,255,255,.35); letter-spacing:.14em; padding-top:10px; }
+
+  @media (max-width:640px) {
+    #nowCard { flex-direction:column; }
+    .art { width:112px; height:112px; font-size:40px; }
+    .stage { padding:20px 14px 30px; }
+  }
+
+  /* OBS transparent mode: ?transparent=1 */
+  body.transparent { background:transparent; min-height:0; }
+  body.transparent::before, body.transparent .orb { display:none; }
+  body.transparent .stage { max-width:none; margin:0; padding:18px; min-height:0; justify-content:flex-end; }
+  body.transparent header.top, body.transparent footer.note, body.transparent #idleCard, body.transparent #roomBar { display:none !important; }
 </style>
 </head>
 <body>
-<div id="nextCard" class="card">
-  <div class="art"><span>»</span><img id="nextArtImg" alt=""></div>
-  <div>
-    <div class="label">NEXT</div>
-    <div id="nextTitle">—</div>
-    <div id="nextArtist" class="artist"></div>
-  </div>
-</div>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="stage">
 
-<div id="faders">
-  <div class="fader">CH1<div class="bar"><div id="ch1Fill" class="fill"></div></div></div>
-  <div class="fader">CROSS<div class="bar"><div id="crossFill" class="fill"></div></div></div>
-  <div class="fader">CH2<div class="bar"><div id="ch2Fill" class="fill"></div></div></div>
-</div>
+  <header class="top">
+    <div class="brand"><b>REKORDBOX</b> RELAY</div>
+    <span id="liveBadge" class="live off"><span class="dot"></span><span id="liveText">STANDBY</span></span>
+    <div class="spacer"></div>
+    <div id="conn" class="conn">接続中…</div>
+    <div id="clock" class="clock"></div>
+  </header>
 
-<div id="nowCard" class="card">
-  <div class="art"><span>♪</span><img id="artImg" alt=""></div>
-  <div>
-    <div class="label">NOW PLAYING</div>
-    <div id="title">—</div>
-    <div id="artist" class="artist"></div>
-    <div id="work" class="work"></div>
-    <div id="meta" class="meta"></div>
-    <div id="progressBar"><div id="progressFill"></div></div>
+  <div id="roomBar"><span class="rbLabel">DJ</span></div>
+
+  <div id="nowCard" class="glass">
+    <div class="art"><span>♪</span><img id="artImg" alt=""></div>
+    <div class="nowBody">
+      <div class="labelRow">
+        <div class="label">NOW PLAYING</div>
+        <span id="deckChip" class="chip">DECK 1</span>
+        <span class="eq" id="eqIcon"><i></i><i></i><i></i><i></i></span>
+      </div>
+      <div id="title">—</div>
+      <div id="artist"></div>
+      <div id="work"></div>
+      <div class="metaRow">
+        <span class="metaChip" id="bpmChip">BPM —</span>
+        <span class="metaChip" id="stateChip">—</span>
+      </div>
+      <div class="progressWrap">
+        <div id="progressBar"><div id="progressFill"></div></div>
+        <div class="times"><span id="elapsed">0:00</span><span id="remain">-0:00</span></div>
+      </div>
+    </div>
   </div>
+
+  <div id="idleCard" class="glass">
+    <div class="big">♪</div>
+    <div class="t1">待 機 中</div>
+    <div class="t2">Rekordbox からの受信を待っています。<br>Mac 側でエージェントを起動すると、再生中の曲がここに表示されます。</div>
+  </div>
+
+  <div id="nextCard" class="glass">
+    <div class="art"><span>»</span><img id="nextArtImg" alt=""></div>
+    <div style="flex:1; min-width:0;">
+      <div class="label">NEXT</div>
+      <div id="nextTitle">—</div>
+      <div id="nextArtist"></div>
+    </div>
+    <div id="nextDur"></div>
+  </div>
+
+  <div id="mixer" class="glass">
+    <div class="mLabel">MIXER</div>
+    <div class="faders">
+      <div class="fader"><div class="fTop"><span>CH1</span><span class="fVal" id="ch1Val"></span></div><div class="bar"><div id="ch1Fill" class="fill"></div></div></div>
+      <div class="fader"><div class="fTop"><span>CROSS</span><span class="fVal" id="crossVal"></span></div><div class="bar"><div id="crossFill" class="fill"></div></div></div>
+      <div class="fader"><div class="fTop"><span>CH2</span><span class="fVal" id="ch2Val"></span></div><div class="bar"><div id="ch2Fill" class="fill"></div></div></div>
+    </div>
+  </div>
+
+  <footer class="note" id="footNote">NOW PLAYING RELAY</footer>
 </div>
 
 <script>
   const el = id => document.getElementById(id);
-  const nowCard = el('nowCard'), nextCard = el('nextCard'), faders = el('faders');
+  const params = new URLSearchParams(location.search);
+  if (params.has('transparent')) document.body.classList.add('transparent');
+  const nowCard = el('nowCard'), nextCard = el('nextCard'), idleCard = el('idleCard'), mixer = el('mixer');
+
+  /* ---- DJルーム (複数DJ対応) ---- */
+  let pinnedRoom = params.get('room') || null;   // URLで固定された部屋 (null = 自動)
+  let currentRoom = pinnedRoom || 'main';        // 現在表示中の部屋
+  let roomsCache = [];
+  function roomQuery() { return '?room=' + encodeURIComponent(currentRoom); }
+  function renderRooms() {
+    const bar = el('roomBar');
+    const names = new Set(roomsCache.map(r => r.name));
+    names.add('main'); if (pinnedRoom) names.add(pinnedRoom); names.add(currentRoom);
+    if (names.size <= 1 && !pinnedRoom) { bar.classList.remove('show'); return; }
+    bar.classList.add('show');
+    let html = '<span class="rbLabel">DJ</span>';
+    html += '<button class="roomChip' + (!pinnedRoom ? ' active' : '') + '" data-room="">AUTO</button>';
+    for (const name of [...names].sort()) {
+      const info = roomsCache.find(r => r.name === name);
+      const live = info && info.live && (Date.now() / 1000 - info.updated_at < 20);
+      html += '<button class="roomChip' + (pinnedRoom === name ? ' active' : '') + (live ? ' live' : '') +
+              '" data-room="' + name + '"><span class="rdot"></span>' + name + '</button>';
+    }
+    bar.innerHTML = html;
+    bar.querySelectorAll('.roomChip').forEach(ch => ch.addEventListener('click', () => {
+      const r = ch.getAttribute('data-room');
+      pinnedRoom = r || null;
+      const q = new URLSearchParams(location.search);
+      if (pinnedRoom) q.set('room', pinnedRoom); else q.delete('room');
+      history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q.toString() : ''));
+      if (pinnedRoom) currentRoom = pinnedRoom;
+      lastNow = ''; lastNext = '';
+      renderRooms(); tick();
+    }));
+    el('footNote').textContent = 'DJ ' + currentRoom + ' — NOW PLAYING RELAY';
+  }
+  async function refreshRooms() {
+    try {
+      const r = await fetch('/rooms', { cache: 'no-store' });
+      roomsCache = await r.json();
+      if (!pinnedRoom) {
+        const now = Date.now() / 1000;
+        const fresh = roomsCache.filter(x => now - x.updated_at < 20);
+        const live = fresh.filter(x => x.live);
+        const pick = (live[0] || fresh[0] || null);
+        if (pick) currentRoom = pick.name;
+      }
+      renderRooms();
+    } catch (e) { /* 次回に再試行 */ }
+  }
+  setInterval(refreshRooms, 5000);
   let lastNow = '', lastNext = '';
-  function setFill(id, v) { if (v !== null && v !== undefined) el(id).style.width = (v / 127 * 100) + '%'; }
+  let posBase = null, posAt = 0, durSec = null, isPlaying = false;
+
   function fmt(sec) {
-    if (sec === null || sec === undefined) return '--:--';
+    if (sec === null || sec === undefined || isNaN(sec)) return '--:--';
     sec = Math.max(0, Math.round(sec));
     return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
   }
+  function setFill(id, valId, v) {
+    if (v === null || v === undefined) { el(valId).textContent = ''; return; }
+    el(id).style.width = (v / 127 * 100) + '%';
+    el(valId).textContent = Math.round(v / 127 * 100) + '%';
+  }
+  function setArt(img, url) {
+    if (url) {
+      if (img.getAttribute('src') !== url) img.src = url;
+      img.style.display = 'block';
+    } else img.style.display = 'none';
+  }
+  function drawProgress() {
+    if (posBase === null || !durSec) return;
+    let p = posBase + (isPlaying ? (Date.now() - posAt) / 1000 : 0);
+    if (p > durSec) p = durSec;
+    el('progressFill').style.width = (p / durSec * 100) + '%';
+    el('elapsed').textContent = fmt(p);
+    el('remain').textContent = '-' + fmt(durSec - p);
+  }
+  setInterval(drawProgress, 500);
+
+  function clock() {
+    const d = new Date();
+    el('clock').textContent = d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+  setInterval(clock, 1000); clock();
+
   async function tick() {
     try {
-      const r = await fetch('/api', { cache: 'no-store' });
+      const r = await fetch('/api' + roomQuery(), { cache: 'no-store' });
       const s = await r.json();
-      const deck = s.on_air ? s.decks[s.on_air] : null;
-      if (s.status === 'ok' && deck && deck.title) {
+      el('conn').textContent = '接続OK';
+      const deck = s.on_air ? (s.decks || {})[s.on_air] : null;
+      const live = s.status === 'ok' && deck && deck.title;
+      const badge = el('liveBadge');
+      if (live) {
+        badge.classList.remove('off');
+        el('liveText').textContent = 'ON AIR';
         const key = deck.title + '|' + (deck.artist || '');
         if (key !== lastNow) {
           lastNow = key;
@@ -102,58 +334,56 @@
           el('artist').textContent = deck.artist || '';
         }
         el('work').textContent = deck.work || '';
-        const artImg = el('artImg');
-        if (deck.artwork) {
-          if (artImg.getAttribute('src') !== deck.artwork) artImg.src = deck.artwork;
-          artImg.style.display = 'block';
-        } else {
-          artImg.style.display = 'none';
+        setArt(el('artImg'), deck.artwork);
+        el('deckChip').textContent = 'DECK ' + s.on_air;
+        el('bpmChip').textContent = deck.bpm ? 'BPM ' + deck.bpm : 'BPM —';
+        isPlaying = deck.playing !== false;
+        el('stateChip').textContent = isPlaying ? 'PLAYING' : 'STOP';
+        el('eqIcon').classList.toggle('on', isPlaying);
+        posBase = (deck.position_sec != null) ? deck.position_sec : null;
+        durSec = (deck.duration_sec != null) ? deck.duration_sec : null;
+        posAt = Date.now();
+        if (durSec && posBase !== null) {
+          el('progressFill').style.width = (posBase / durSec * 100) + '%';
+          el('elapsed').textContent = fmt(posBase);
+          el('remain').textContent = '-' + fmt(deck.remaining_sec != null ? deck.remaining_sec : durSec - posBase);
         }
-        el('meta').textContent =
-          (deck.bpm ? 'BPM ' + deck.bpm + '　' : '') + 'DECK ' + s.on_air +
-          '　' + fmt(deck.position_sec) + ' / ' + fmt(deck.duration_sec) +
-          (deck.remaining_sec != null ? '　(-' + fmt(deck.remaining_sec) + ')' : '') +
-          (deck.playing === false ? '　(STOP)' : '');
-        el('progressFill').style.width =
-          (deck.progress != null ? deck.progress * 100 : 0) + '%';
         nowCard.classList.add('show');
+        idleCard.classList.remove('show');
       } else {
+        badge.classList.add('off');
+        el('liveText').textContent = 'STANDBY';
         nowCard.classList.remove('show');
+        idleCard.classList.add('show');
+        posBase = null; isPlaying = false;
       }
       if (s.next && s.next.title) {
         const nkey = s.next.title + '|' + (s.next.artist || '');
         if (nkey !== lastNext) {
           lastNext = nkey;
           el('nextTitle').textContent = s.next.title;
-          el('nextArtist').textContent = (s.next.artist || '') +
-            (s.next.duration_sec != null ? '　' + fmt(s.next.duration_sec) : '');
-          const nImg = el('nextArtImg');
-          if (s.next.artwork) {
-            if (nImg.getAttribute('src') !== s.next.artwork) nImg.src = s.next.artwork;
-            nImg.style.display = 'block';
-          } else {
-            nImg.style.display = 'none';
-          }
+          el('nextArtist').textContent = s.next.artist || '';
+          el('nextDur').textContent = s.next.duration_sec != null ? fmt(s.next.duration_sec) : '';
+          setArt(el('nextArtImg'), s.next.artwork);
         }
         nextCard.classList.add('show');
       } else {
         nextCard.classList.remove('show');
       }
-      if (s.faders && (s.faders.ch1 !== null || s.faders.cross !== null)) {
-        faders.style.display = 'flex';
-        setFill('ch1Fill', s.faders.ch1);
-        setFill('ch2Fill', s.faders.ch2);
-        setFill('crossFill', s.faders.cross);
+      if (s.faders && (s.faders.ch1 != null || s.faders.cross != null || s.faders.ch2 != null)) {
+        mixer.classList.add('show');
+        setFill('ch1Fill', 'ch1Val', s.faders.ch1);
+        setFill('ch2Fill', 'ch2Val', s.faders.ch2);
+        setFill('crossFill', 'crossVal', s.faders.cross);
       } else {
-        faders.style.display = 'none';
+        mixer.classList.remove('show');
       }
     } catch (e) {
-      nowCard.classList.remove('show');
-      nextCard.classList.remove('show');
-      faders.style.display = 'none';
+      el('conn').textContent = '接続エラー（再試行中）';
     }
   }
   setInterval(tick, 1000);
+  refreshRooms();
   tick();
 </script>
 </body>

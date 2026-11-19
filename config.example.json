@@ -1,1 +1,10 @@
-{"deck_band_ratio":0.5,"midi_port_hint":"DDJ-1000","poll_seconds":2.0,"port":8765,"push_seconds":1.0,"relay_token":"","relay_url":""}
+{
+  "deck_band_ratio": 0.5,
+  "midi_port_hint": "DDJ-1000",
+  "poll_seconds": 2.0,
+  "port": 8765,
+  "push_seconds": 1.0,
+  "relay_token": "",
+  "relay_url": "",
+  "room": ""
+}

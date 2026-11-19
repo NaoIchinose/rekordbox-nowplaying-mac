@@ -14,17 +14,27 @@
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TOKEN = os.environ.get("RELAY_TOKEN", "")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 
-state = {"status": "waiting-for-push", "updated_at": None}
+EMPTY = {"now": None, "next": None, "decks": {}, "faders": {}, "updated_at": 0}
+ROOM_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+rooms = {}  # room名 -> {"state": payload, "ts": 受信時刻}
 lock = threading.Lock()
+
+
+def room_of(path):
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+    r = (q.get("room") or ["main"])[0]
+    return r if ROOM_RE.match(r) else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,11 +52,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if self.path != "/push":
+        if not self.path.startswith("/push"):
             self._send(404, "not found", "text/plain; charset=utf-8")
             return
         if TOKEN and self.headers.get("X-Token") != TOKEN:
             self._send(403, "bad token", "text/plain; charset=utf-8")
+            return
+        room = room_of(self.path)
+        if room is None:
+            self._send(400, "bad room", "text/plain; charset=utf-8")
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -55,16 +69,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, "bad json", "text/plain; charset=utf-8")
             return
         with lock:
-            state.clear()
-            state.update(payload)
-            state["relay_received_at"] = time.time()
+            rooms[room] = {"state": payload, "ts": time.time()}
         self._send(200, "ok", "text/plain; charset=utf-8")
 
     def do_GET(self):
         if self.path.startswith("/api"):
+            room = room_of(self.path)
+            if room is None:
+                self._send(400, "bad room", "text/plain; charset=utf-8")
+                return
             with lock:
-                payload = json.dumps(state, ensure_ascii=False)
+                entry = rooms.get(room)
+                payload = json.dumps(entry["state"] if entry else EMPTY,
+                                     ensure_ascii=False)
             self._send(200, payload, "application/json; charset=utf-8")
+        elif self.path.startswith("/rooms"):
+            with lock:
+                snapshot = list(rooms.items())
+            out = []
+            for name, entry in snapshot:
+                s = entry["state"] or {}
+                deck = (s.get("decks") or {}).get(str(s.get("on_air"))) if s.get("on_air") else None
+                out.append({
+                    "name": name,
+                    "updated_at": int(entry["ts"]),
+                    "live": bool(s.get("status") == "ok" and deck and deck.get("title")),
+                    "title": deck.get("title") if deck else None,
+                })
+            out.sort(key=lambda x: -x["updated_at"])
+            self._send(200, json.dumps(out, ensure_ascii=False),
+                       "application/json; charset=utf-8")
         elif self.path == "/" or self.path.startswith("/overlay"):
             try:
                 with open(os.path.join(BASE, "overlay.html"), encoding="utf-8") as f:

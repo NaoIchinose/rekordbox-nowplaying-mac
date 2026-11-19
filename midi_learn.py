@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MIDIラーン: DDJ-1000の操作を実際に動かして、MIDI番号を記録する。
-DDJ-1000のMIDIマッピングは機材依存の部分があるため、推測で決めず実機で学習する。
+MIDIラーン: コントローラーを実際に動かして、MIDI番号を記録する。
+MIDIマッピングは機材依存の部分があるため、推測で決めず実機で学習する。
+DDJ-1000 / DDJ-FLX4 など、使うコントローラーごとに1回ずつ実行する。
 
 手順 (画面の指示に従ってコントローラーを操作するだけ):
+  0. 複数のMIDIポートがある場合は、使用するコントローラーを番号で選ぶ
   1. CH1フェーダーを 上→下
   2. CH2フェーダーを 上→下
   3. クロスフェーダーを 左→右
   4. DECK1 の PLAY を1回
   5. DECK2 の PLAY を1回
-結果は midi_map.json に保存される。
+結果は midi_maps/<機種名>.json に保存される (nowplaying.py が接続中の機種を
+自動判別して読み分ける)。互換のため midi_map.json にも同じ内容を書く。
 
 必要: pip3 install mido python-rtmidi
 注意: Rekordboxを起動したままでも構いません (macOSのMIDIは複数アプリで同時受信できます)。
 """
 import json
 import os
+import re
 import sys
 import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(BASE, "midi_map.json")
+MAPS_DIR = os.path.join(BASE, "midi_maps")
 
 try:
     import mido
@@ -38,12 +43,30 @@ STEPS = [
 ]
 
 
+def choose_port(names):
+    if len(names) == 1:
+        return names[0]
+    default = next((i for i, n in enumerate(names)
+                    if "DDJ" in n or "FLX" in n), 0)
+    print("MIDI入力ポートが複数あります:")
+    for i, n in enumerate(names):
+        mark = " (Enterで選択)" if i == default else ""
+        print(f"  {i + 1}: {n}{mark}")
+    try:
+        ans = input(f"番号を入力してください [{default + 1}]: ").strip()
+    except EOFError:
+        ans = ""
+    if ans.isdigit() and 1 <= int(ans) <= len(names):
+        return names[int(ans) - 1]
+    return names[default]
+
+
 def main():
     names = mido.get_input_names()
     if not names:
-        print("MIDI入力ポートがありません。DDJ-1000を接続してください。")
+        print("MIDI入力ポートがありません。コントローラーを接続してください。")
         sys.exit(1)
-    port_name = next((n for n in names if "DDJ-1000" in n), names[0])
+    port_name = choose_port(names)
     print(f"使用ポート: {port_name}")
     result = {"cc": {}, "note": {}, "port": port_name}
     with mido.open_input(port_name) as port:
@@ -75,9 +98,15 @@ def main():
                 print(f"   記録: {key} -> {found}")
             else:
                 print(f"   [未検出] {key} は記録できませんでした (後で再実行できます)")
+    os.makedirs(MAPS_DIR, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", port_name).strip("_") or "device"
+    profile_path = os.path.join(MAPS_DIR, safe + ".json")
+    with open(profile_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"\n保存しました: {OUT}")
+    print(f"\n保存しました: {profile_path}")
+    print(f"（互換用コピー: {OUT}）")
     print("このファイルをユウカにも送ってください (マッピング確認用)。")
 
 

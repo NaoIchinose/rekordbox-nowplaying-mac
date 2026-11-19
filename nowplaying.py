@@ -4,7 +4,9 @@
 Rekordbox 7 NOW PLAYING (macOS版) v1
 仕様:
 - 曲情報: Rekordboxの画面要素を macOS アクセシビリティ(osascript) で取得
-- MIDI: DDJ-1000から 再生/停止・CHフェーダー・クロスフェーダーを取得 (midi_map.json + mido が必要)
+- MIDI: コントローラーから 再生/停止・CHフェーダー・クロスフェーダーを取得
+        (midi_maps/ 内の機種別プロファイル + mido が必要。DDJ-1000 / DDJ-FLX4 など
+         接続中の機種を自動判別し、抜き差しすると自動で再接続する)
 - オンエア判定: フェーダー位置と再生状態から計算 (MIDIが無い場合は時間表示の進行で判定)
 - 配信: ローカル http://localhost:8765/ と /api
         + config.json の relay_url を設定すると、状態JSONをオンライン中継サーバーへ push する
@@ -25,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 MIDI_MAP_PATH = os.path.join(BASE, "midi_map.json")
+MIDI_MAPS_DIR = os.path.join(BASE, "midi_maps")
 
 DEFAULTS = {
     "port": 8765,
@@ -34,6 +37,7 @@ DEFAULTS = {
     "relay_token": "",      # relay.py と共有する合言葉
     "push_seconds": 1.0,
     "midi_port_hint": "DDJ-1000",
+    "room": "",             # 複数DJで使う場合の部屋名 (半角英数) 例: "nao"。空なら既定の部屋
     "itunes_lookup": True,   # ジャケット未取得時に iTunes Search API で補完する
 }
 
@@ -408,25 +412,48 @@ def enrich_loop():
 
 # ---------- MIDI ----------
 
-def midi_loop():
-    if not os.path.exists(MIDI_MAP_PATH):
-        print("[midi] midi_map.json が無いため MIDI無効。先に midi_learn.py を実行してください。")
-        return
-    try:
-        import mido
-    except ImportError:
-        print("[midi] mido が入っていません: pip3 install mido python-rtmidi")
-        return
-    with open(MIDI_MAP_PATH, encoding="utf-8") as f:
-        mmap = json.load(f)
-    names = mido.get_input_names()
-    port_name = next((n for n in names if CFG["midi_port_hint"] in n), None)
-    if port_name is None:
-        print(f"[midi] '{CFG['midi_port_hint']}' を含むMIDIポートが見つかりません: {names}")
-        return
-    print(f"[midi] 接続: {port_name}")
-    with state_lock:
-        state["midi_connected"] = True
+def load_midi_profiles():
+    """学習済みプロファイルを [(ポート名の目印, map), ...] で返す。
+
+    midi_maps/*.json (機種別) を優先し、旧形式の midi_map.json も読み込む。
+    """
+    profiles = []
+    seen = set()
+
+    def _add(port_hint, mmap):
+        key = (port_hint or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            profiles.append((key, mmap))
+
+    if os.path.isdir(MIDI_MAPS_DIR):
+        for fn in sorted(os.listdir(MIDI_MAPS_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(MIDI_MAPS_DIR, fn), encoding="utf-8") as f:
+                    mmap = json.load(f)
+                _add(mmap.get("port") or fn[:-5], mmap)
+            except Exception:
+                pass
+    if os.path.exists(MIDI_MAP_PATH):
+        try:
+            with open(MIDI_MAP_PATH, encoding="utf-8") as f:
+                mmap = json.load(f)
+            _add(mmap.get("port") or CFG.get("midi_port_hint", ""), mmap)
+        except Exception:
+            pass
+    return profiles
+
+
+def _match_profile(profiles, port_name):
+    for hint, mmap in profiles:
+        if hint and (hint in port_name or port_name in hint):
+            return mmap
+    return None
+
+
+def _midi_session(mido, port_name, mmap):
     cc_map = {}
     for k, v in mmap.get("cc", {}).items():
         cc_map[v["cc"]] = (k, "msb")
@@ -454,12 +481,59 @@ def midi_loop():
                     _midi_playing[2] = not bool(_midi_playing[2])
 
 
+def midi_loop():
+    """接続中のコントローラーを自動判別し、抜き差しに追従する監視ループ。"""
+    try:
+        import mido
+    except ImportError:
+        print("[midi] mido が入っていません: pip3 install mido python-rtmidi")
+        return
+    announced_wait = False
+    while True:
+        profiles = load_midi_profiles()
+        if not profiles:
+            if not announced_wait:
+                print("[midi] 学習済みプロファイルが無いため待機中。"
+                      "先に midi_learn.py を実行してください (後から追加しても自動で拾います)。")
+                announced_wait = True
+            time.sleep(10)
+            continue
+        announced_wait = False
+        try:
+            names = mido.get_input_names()
+        except Exception:
+            names = []
+        port_name, mmap = None, None
+        for n in names:
+            m = _match_profile(profiles, n)
+            if m is not None:
+                port_name, mmap = n, m
+                break
+        if port_name is None:
+            time.sleep(5)
+            continue
+        print(f"[midi] 接続: {port_name}")
+        with state_lock:
+            state["midi_connected"] = True
+        try:
+            _midi_session(mido, port_name, mmap)
+        except Exception as e:
+            print(f"[midi] 切断されました ({e}) — 再接続を待ちます")
+        with state_lock:
+            state["midi_connected"] = False
+        time.sleep(3)
+
+
 # ---------- オンライン中継 (push) ----------
 
 def push_loop():
     url = CFG.get("relay_url") or ""
     if not url:
         return
+    room = (CFG.get("room") or "").strip()
+    if room:
+        # DJごとの部屋分け: relay_url に ?room=<dj名> を付けて送る
+        url += ("&" if "?" in url else "?") + "room=" + urllib.parse.quote(room)
     while True:
         try:
             with state_lock:
