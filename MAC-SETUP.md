@@ -61,3 +61,20 @@ python3 midi_learn.py
 ## 7. 後日（二次会の準備として）
 
 - OBSの30分テスト（最軽量設定 720p30・録画/配信なし）で、MacBook Airの負荷を確認する。音飛びや波形のカクつきが出たらミラーリング案に戻す
+
+## 8. ハイブリッド補完（波形表示・任意）
+
+Rekordbox の master.db と解析ファイル (ANLZ) から、波形・キュー位置・ジャケット・
+アルバム名を補完する機能です。入れなくても従来どおり動作します。
+
+1. 先行検証（初回のみ）：
+
+```bash
+pip3 install pyrekordbox
+python3 db_probe.py
+```
+
+2. 最後に `PROBE_OK` と出たら、そのまま start.command で起動するだけです
+   （dbmeta.py が自動で master.db を読みます。DB本体は読み取り専用の一時コピー経由）
+3. `PROBE_NG` の場合は、出力全体をユウカに送ってください
+4. 無効化したい場合は config.json に `"db_metadata": false` を追加します

@@ -4,6 +4,8 @@
 Rekordbox 7 NOW PLAYING (macOS版) v1
 仕様:
 - 曲情報: Rekordboxの画面要素を macOS アクセシビリティ(osascript) で取得
+- ハイブリッド補完: master.db + ANLZ から アルバム・長さ・波形・キュー・ジャケットを付加
+        (dbmeta.py / pyrekordbox が必要。使えない環境では自動で従来動作になる)
 - MIDI: コントローラーから 再生/停止・CHフェーダー・クロスフェーダーを取得
         (midi_maps/ 内の機種別プロファイル + mido が必要。DDJ-1000 / DDJ-FLX4 など
          接続中の機種を自動判別し、抜き差しすると自動で再接続する)
@@ -39,6 +41,7 @@ DEFAULTS = {
     "midi_port_hint": "DDJ-1000",
     "room": "",             # 複数DJで使う場合の部屋名 (半角英数) 例: "nao"。空なら既定の部屋
     "itunes_lookup": True,   # ジャケット未取得時に iTunes Search API で補完する
+    "db_metadata": True,     # master.db ハイブリッド補完 (dbmeta.py / pyrekordbox が必要)
 }
 
 def load_config():
@@ -321,7 +324,7 @@ def compute_on_air(decks):
     if on_air in (1, 2):
         other = 2 if on_air == 1 else 1
         if decks.get(other) and decks[other]["title"]:
-            nxt = {"deck": other, **{k: decks[other].get(k) for k in ("title", "artist", "bpm", "duration_sec", "work", "artwork")}}
+            nxt = {"deck": other, **{k: decks[other].get(k) for k in ("title", "artist", "bpm", "duration_sec", "work", "artwork", "artwork_data", "album")}}
     return on_air, nxt
 
 
@@ -344,6 +347,9 @@ def poll_loop():
                 decks = parse_decks(win, items)
                 now_ts = time.time()
                 for d in (1, 2):
+                    # position_sec が真だった時刻 (表示側で遅延を補正するための基準)
+                    decks[d]["pos_at"] = now_ts
+                for d in (1, 2):
                     # 部分的に欠けた取得は「情報なし」として、前回の正常値を少しだけ保持する
                     if decks[d]["title"]:
                         _last_good[d] = (dict(decks[d]), now_ts)
@@ -354,6 +360,11 @@ def poll_loop():
                     enr = _enrich.get(_key(decks[d]["title"], decks[d]["artist"])) or {}
                     decks[d]["work"] = enr.get("work")
                     decks[d]["artwork"] = enr.get("artwork")
+                    for k in ("album", "comment", "waveform", "cues", "artwork_data"):
+                        if enr.get(k) is not None:
+                            decks[d][k] = enr[k]
+                    if not decks[d].get("duration_sec") and enr.get("db_length"):
+                        decks[d]["duration_sec"] = enr["db_length"]
                 for d in (1, 2):
                     cur = set(decks[d]["times"])
                     _time_known[d] = bool(cur and _prev_times[d])
@@ -392,6 +403,7 @@ def _key(title, artist):
 
 _catalog = {}
 _itunes_cache = {}
+_dbmeta = None
 _CACHE_PATH = os.path.join(BASE, "artwork_cache.json")
 
 
@@ -435,7 +447,17 @@ def _itunes_lookup(title, artist):
 
 
 def enrich_loop():
+    global _dbmeta
     _load_enrich_sources()
+    if CFG.get("db_metadata", True):
+        try:
+            from dbmeta import DbMeta
+            _dbmeta = DbMeta()
+            _dbmeta.start()
+            print("[enrich] master.db ハイブリッド補完を有効化しました")
+        except Exception as e:
+            print(f"[enrich] dbmeta 初期化失敗 (従来動作を継続): {e}", file=sys.stderr)
+            _dbmeta = None
     while True:
         try:
             with state_lock:
@@ -447,7 +469,21 @@ def enrich_loop():
                 k = _key(title, artist)
                 if k in _enrich:
                     continue
-                entry = dict(_catalog.get(k) or _itunes_cache.get(k) or {})
+                entry = {}
+                if _dbmeta is not None:
+                    try:
+                        s = _dbmeta.lookup(title, artist, d.get("duration_sec"))
+                    except Exception:
+                        s = None
+                    if s:
+                        entry["album"] = s.get("album")
+                        entry["comment"] = s.get("comment")
+                        entry["db_length"] = s.get("length")
+                        try:
+                            entry.update(_dbmeta.payload(s))
+                        except Exception:
+                            pass
+                entry.update(_catalog.get(k) or _itunes_cache.get(k) or {})
                 if not entry.get("artwork") and CFG.get("itunes_lookup", True):
                     try:
                         got = _itunes_lookup(title, artist)
@@ -597,10 +633,24 @@ def push_loop():
         # DJごとの部屋分け: relay_url に ?room=<dj名> を付けて送る
         url += ("&" if "?" in url else "?") + "room=" + urllib.parse.quote(room)
     last_log = 0.0
+    last_sig = None
     while True:
         try:
             with state_lock:
-                payload = json.dumps(state, ensure_ascii=False).encode("utf-8")
+                snapshot = json.loads(json.dumps(state, ensure_ascii=False))
+            decks = snapshot.get("decks") or {}
+            sig = tuple((decks.get(str(d)) or {}).get("title") for d in (1, 2)) + \
+                ((snapshot.get("next") or {}).get("title"),)
+            if sig == last_sig:
+                # 曲が変わっていない間はジャケット実データを送らない (表示側で曲ごとに保持)
+                for d in decks.values():
+                    if d:
+                        d.pop("artwork_data", None)
+                if snapshot.get("next"):
+                    snapshot["next"].pop("artwork_data", None)
+            else:
+                last_sig = sig
+            payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
                 url, data=payload, method="POST",
                 headers={"Content-Type": "application/json",

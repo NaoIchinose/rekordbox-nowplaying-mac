@@ -11,8 +11,13 @@ fi
 
 APP_DIR=/opt/nowplaying-relay
 mkdir -p "$APP_DIR"
-cp "$(dirname "$0")/../relay.py" "$APP_DIR/relay.py"
-cp "$(dirname "$0")/../overlay.html" "$APP_DIR/overlay.html"
+# relay.py / overlay.html は、このスクリプトと同じフォルダか1つ上のフォルダにある想定
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -f "$SRC_DIR/relay.py" ]; then
+  SRC_DIR="$(dirname "$SRC_DIR")"
+fi
+cp "$SRC_DIR/relay.py" "$APP_DIR/relay.py"
+cp "$SRC_DIR/overlay.html" "$APP_DIR/overlay.html"
 
 # 専用ユーザー
 id relay >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin relay

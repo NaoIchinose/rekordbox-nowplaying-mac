@@ -105,6 +105,8 @@
     letter-spacing:.01em; }
   #artist { font-size:clamp(15px, 2.6vw, 19px); color:rgba(255,255,255,.85); margin-top:3px; }
   #work { font-size:12.5px; color:#8fd3ff; margin-top:3px; }
+  #comment { font-size:12px; color:rgba(255,255,255,.55); margin-top:2px;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .metaRow { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
   .metaChip {
     font-size:11px; letter-spacing:.08em; color:rgba(255,255,255,.8);
@@ -112,6 +114,8 @@
     border-radius:999px; padding:4px 10px; font-variant-numeric:tabular-nums;
   }
   .progressWrap { margin-top:auto; padding-top:16px; }
+  #waveCanvas { width:100%; height:46px; display:none; margin-bottom:9px; }
+  #waveCanvas.on { display:block; }
   #progressBar { height:6px; background:rgba(255,255,255,.14); border-radius:3px; overflow:hidden; }
   #progressFill { height:100%; width:0%; border-radius:3px;
     background:linear-gradient(90deg,#ffb86b,#ff8c42,#ff5d8f);
@@ -188,11 +192,13 @@
       <div id="title">—</div>
       <div id="artist"></div>
       <div id="work"></div>
+      <div id="comment"></div>
       <div class="metaRow">
         <span class="metaChip" id="bpmChip">BPM —</span>
         <span class="metaChip" id="stateChip">—</span>
       </div>
       <div class="progressWrap">
+        <canvas id="waveCanvas" width="720" height="46"></canvas>
         <div id="progressBar"><div id="progressFill"></div></div>
         <div class="times"><span id="elapsed">0:00</span><span id="remain">-0:00</span></div>
       </div>
@@ -282,6 +288,40 @@
   setInterval(refreshRooms, 5000);
   let lastNow = '', lastNext = '';
   let posBase = null, posAt = 0, durSec = null, isPlaying = false;
+  let waveData = null, waveCues = null, waveKey = '';
+  const artCache = {};
+  function artFor(deck, key) {
+    if (deck.artwork_data) { artCache[key] = deck.artwork_data; return deck.artwork_data; }
+    return artCache[key] || deck.artwork || null;
+  }
+  function drawWave(p) {
+    const cv = el('waveCanvas');
+    if (!waveData || !waveData.length || !durSec) {
+      cv.classList.remove('on'); el('progressBar').style.display = ''; return;
+    }
+    cv.classList.add('on');
+    el('progressBar').style.display = 'none';
+    const ctx = cv.getContext('2d');
+    const W = cv.width, H = cv.height, n = waveData.length;
+    ctx.clearRect(0, 0, W, H);
+    const playedX = Math.min(W, Math.max(0, p / durSec * W));
+    const bw = W / n;
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(1.5, waveData[i] / 31 * (H - 10));
+      const x = i * bw;
+      ctx.fillStyle = (x + bw / 2) <= playedX ? '#ff8c42' : 'rgba(255,255,255,.30)';
+      ctx.fillRect(x, (H - h) / 2 + 3, Math.max(1, bw - 0.6), h);
+    }
+    if (waveCues) {
+      ctx.fillStyle = '#8fd3ff';
+      for (const t of waveCues) {
+        const x = t / durSec * W;
+        if (x >= 0 && x <= W) ctx.fillRect(x - 1, 0, 2, 7);
+      }
+    }
+    ctx.fillStyle = 'rgba(255,255,255,.9)';
+    ctx.fillRect(playedX - 1, 0, 2, H);
+  }
 
   // 長い曲名が切れないよう、最大2行に収まるまでフォントを自動で縮小する
   function fitTitle() {
@@ -320,6 +360,7 @@
     el('progressFill').style.width = (p / durSec * 100) + '%';
     el('elapsed').textContent = fmt(p);
     el('remain').textContent = '-' + fmt(durSec - p);
+    drawWave(p);
   }
   setInterval(drawProgress, 500);
 
@@ -347,8 +388,14 @@
           el('artist').textContent = deck.artist || '';
           fitTitle();
         }
-        el('work').textContent = deck.work || '';
-        setArt(el('artImg'), deck.artwork);
+        el('work').textContent = deck.work || deck.album || '';
+        el('comment').textContent = deck.comment || '';
+        setArt(el('artImg'), artFor(deck, key));
+        if (deck.waveform && deck.waveform.length) {
+          waveData = deck.waveform; waveCues = deck.cues || null; waveKey = key;
+        } else if (key !== waveKey) {
+          waveData = null; waveCues = null; waveKey = key;
+        }
         el('deckChip').textContent = 'DECK ' + s.on_air;
         el('bpmChip').textContent = deck.bpm ? 'BPM ' + deck.bpm : 'BPM —';
         isPlaying = deck.playing !== false;
@@ -356,11 +403,15 @@
         el('eqIcon').classList.toggle('on', isPlaying);
         posBase = (deck.position_sec != null) ? deck.position_sec : null;
         durSec = (deck.duration_sec != null) ? deck.duration_sec : null;
-        posAt = Date.now();
+        // 遅延補正: 位置が読まれた時刻 (Mac側) を基準に、いまの位置まで進めて表示する
+        posAt = (deck.pos_at != null) ? deck.pos_at * 1000 : Date.now();
+        const lag = Math.max(0, (Date.now() - posAt) / 1000);
+        el('conn').textContent = '接続OK（遅延約' + lag.toFixed(1) + 's・補正中）';
         if (durSec && posBase !== null) {
-          el('progressFill').style.width = (posBase / durSec * 100) + '%';
-          el('elapsed').textContent = fmt(posBase);
-          el('remain').textContent = '-' + fmt(deck.remaining_sec != null ? deck.remaining_sec : durSec - posBase);
+          const p0 = Math.min(durSec, posBase + (isPlaying ? (Date.now() - posAt) / 1000 : 0));
+          el('progressFill').style.width = (p0 / durSec * 100) + '%';
+          el('elapsed').textContent = fmt(p0);
+          el('remain').textContent = '-' + fmt(durSec - p0);
         }
         nowCard.classList.add('show');
         idleCard.classList.remove('show');
@@ -369,7 +420,7 @@
         el('liveText').textContent = 'STANDBY';
         nowCard.classList.remove('show');
         idleCard.classList.add('show');
-        posBase = null; isPlaying = false;
+        posBase = null; isPlaying = false; waveData = null; waveCues = null;
       }
       if (s.next && s.next.title) {
         const nkey = s.next.title + '|' + (s.next.artist || '');
@@ -378,7 +429,7 @@
           el('nextTitle').textContent = s.next.title;
           el('nextArtist').textContent = s.next.artist || '';
           el('nextDur').textContent = s.next.duration_sec != null ? fmt(s.next.duration_sec) : '';
-          setArt(el('nextArtImg'), s.next.artwork);
+          setArt(el('nextArtImg'), artFor(s.next, nkey));
         }
         nextCard.classList.add('show');
       } else {

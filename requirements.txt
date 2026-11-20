@@ -1,1 +1,4 @@
 # relay.py は Python 標準ライブラリのみで動作します（依存パッケージなし）
+# nowplaying.py 本体も標準ライブラリのみ。任意機能の依存は以下:
+#   MIDI を使う場合:            pip3 install mido python-rtmidi
+#   ハイブリッド補完 (波形) :    pip3 install pyrekordbox
