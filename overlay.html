@@ -102,10 +102,9 @@
   .eq i:nth-child(2) { animation-delay:.22s; } .eq i:nth-child(3) { animation-delay:.45s; } .eq i:nth-child(4) { animation-delay:.12s; }
   @keyframes eqb { 0%,100% { height:5px; } 50% { height:14px; } }
   #title { font-size:clamp(24px, 4.6vw, 36px); font-weight:800; line-height:1.22; margin-top:8px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:.01em; }
-  #artist { font-size:clamp(15px, 2.6vw, 19px); color:rgba(255,255,255,.85); margin-top:3px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #work { font-size:12.5px; color:#8fd3ff; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    letter-spacing:.01em; }
+  #artist { font-size:clamp(15px, 2.6vw, 19px); color:rgba(255,255,255,.85); margin-top:3px; }
+  #work { font-size:12.5px; color:#8fd3ff; margin-top:3px; }
   .metaRow { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
   .metaChip {
     font-size:11px; letter-spacing:.08em; color:rgba(255,255,255,.8);
@@ -133,8 +132,8 @@
   #nextCard.show { opacity:1; transform:translateY(0); }
   #nextCard .art { width:58px; height:58px; border-radius:12px; font-size:22px; }
   #nextCard .label { color:#8fd3ff; }
-  #nextTitle { font-size:18px; font-weight:700; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #nextArtist { font-size:13px; color:rgba(255,255,255,.75); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #nextTitle { font-size:18px; font-weight:700; margin-top:3px; }
+  #nextArtist { font-size:13px; color:rgba(255,255,255,.75); margin-top:1px; }
   #nextDur { margin-left:auto; font-size:13px; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; flex:0 0 auto; }
 
   /* mixer strip */
@@ -284,6 +283,20 @@
   let lastNow = '', lastNext = '';
   let posBase = null, posAt = 0, durSec = null, isPlaying = false;
 
+  // 長い曲名が切れないよう、最大2行に収まるまでフォントを自動で縮小する
+  function fitTitle() {
+    const t = el('title');
+    if (!t) return;
+    let size = Math.min(window.innerWidth * 0.046, 36);
+    if (size < 20) size = 20;
+    t.style.fontSize = size + 'px';
+    while (t.clientHeight > size * 1.22 * 2 + 4 && size > 15) {
+      size -= 1;
+      t.style.fontSize = size + 'px';
+    }
+  }
+  window.addEventListener('resize', fitTitle);
+
   function fmt(sec) {
     if (sec === null || sec === undefined || isNaN(sec)) return '--:--';
     sec = Math.max(0, Math.round(sec));
@@ -332,6 +345,7 @@
           lastNow = key;
           el('title').textContent = deck.title;
           el('artist').textContent = deck.artist || '';
+          fitTitle();
         }
         el('work').textContent = deck.work || '';
         setArt(el('artImg'), deck.artwork);

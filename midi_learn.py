@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MIDIラーン: コントローラーを実際に動かして、MIDI番号を記録する。
-MIDIマッピングは機材依存の部分があるため、推測で決めず実機で学習する。
+MIDIラーン v2: コントローラーを実際に動かして、MIDI番号を記録する。
 DDJ-1000 / DDJ-FLX4 など、使うコントローラーごとに1回ずつ実行する。
 
-手順 (画面の指示に従ってコントローラーを操作するだけ):
-  0. 複数のMIDIポートがある場合は、使用するコントローラーを番号で選ぶ
+v2の変更点: 自動確定をやめ、各ステップは Enter を押してから計測する方式に変更。
+フェーダーは「値の振れ幅が大きいCC」を採用するので、微振動 (ジッター) や
+残留メッセージで勝手に確定することはない。同じCCが重複したら警告してやり直す。
+
+手順 (画面の指示に従うだけ):
   1. CH1フェーダーを 上→下
   2. CH2フェーダーを 上→下
   3. クロスフェーダーを 左→右
@@ -35,11 +37,11 @@ except ImportError:
     sys.exit(1)
 
 STEPS = [
-    ("cc", "ch1", "CH1フェーダーを ゆっくり 上→下 へ動かしてください"),
-    ("cc", "ch2", "CH2フェーダーを ゆっくり 上→下 へ動かしてください"),
-    ("cc", "cross", "クロスフェーダーを ゆっくり 左→右 へ動かしてください"),
-    ("note", "play1", "DECK1 の PLAYボタンを 1回 押してください"),
-    ("note", "play2", "DECK2 の PLAYボタンを 1回 押してください"),
+    ("cc", "ch1", "CH1フェーダー (左の縦フェーダー) を ゆっくり 上→下"),
+    ("cc", "ch2", "CH2フェーダー (右の縦フェーダー) を ゆっくり 上→下"),
+    ("cc", "cross", "クロスフェーダー (一番下の横フェーダー) を ゆっくり 左→右"),
+    ("note", "play1", "DECK1 の PLAYボタン を 1回"),
+    ("note", "play2", "DECK2 の PLAYボタン を 1回"),
 ]
 
 
@@ -61,6 +63,60 @@ def choose_port(names):
     return names[default]
 
 
+def wait_enter(prompt):
+    try:
+        input(prompt)
+    except EOFError:
+        pass
+
+
+def flush(port):
+    for _ in port.iter_pending():
+        pass
+
+
+def learn_cc(port, used):
+    """5秒間計測し、値の振れ幅が最大のCCを採用する。used と重複したら None。"""
+    flush(port)
+    stats = {}  # (channel, control) -> [count, min, max]
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        for msg in port.iter_pending():
+            if msg.type == "control_change":
+                s = stats.setdefault((msg.channel + 1, msg.control), [0, 127, 0])
+                s[0] += 1
+                s[1] = min(s[1], msg.value)
+                s[2] = max(s[2], msg.value)
+        time.sleep(0.02)
+    if not stats:
+        return None, "MIDI信号が来ませんでした"
+    ranked = sorted(stats.items(),
+                    key=lambda kv: (kv[1][2] - kv[1][1], kv[1][0]), reverse=True)
+    (ch, cc), (cnt, lo, hi) = ranked[0]
+    if hi - lo < 30:
+        return None, f"振れ幅が小さいです (CC{cc}: {lo}〜{hi})。端から端まで動かしてください"
+    if (ch, cc) in used:
+        return None, f"CC{cc} は既に別のフェーダーで記録済みです。指定されたフェーダーを動かしてください"
+    found = {"channel": ch, "cc": cc}
+    # 14bitフェーダー (MSB/LSBペア): 同時に大きく振れた +32 のCCをLSBとする
+    for (ch2, cc2), (cnt2, lo2, hi2) in ranked[1:]:
+        if ch2 == ch and cc2 == cc + 32 and hi2 - lo2 >= 30:
+            found["cc_lsb"] = cc2
+            break
+    return found, None
+
+
+def learn_note(port):
+    flush(port)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        for msg in port.iter_pending():
+            if msg.type == "note_on" and msg.velocity > 0:
+                return {"channel": msg.channel + 1, "note": msg.note}
+        time.sleep(0.02)
+    return None
+
+
 def main():
     names = mido.get_input_names()
     if not names:
@@ -69,35 +125,32 @@ def main():
     port_name = choose_port(names)
     print(f"使用ポート: {port_name}")
     result = {"cc": {}, "note": {}, "port": port_name}
+    used_cc = set()
     with mido.open_input(port_name) as port:
         for kind, key, instruction in STEPS:
-            print("\n>> " + instruction + " (10秒待ちます)")
-            found = None
-            deadline = time.time() + 10
-            counts = {}
-            last_seen = {}
-            while time.time() < deadline and found is None:
-                for msg in port.iter_pending():
-                    if kind == "cc" and msg.type == "control_change":
-                        counts[msg.control] = counts.get(msg.control, 0) + 1
-                        last_seen[msg.control] = (msg.channel + 1, msg.value)
-                        if max(counts.values()) >= 10:  # 十分動いたら確定
-                            primary = max(counts, key=counts.get)
-                            others = {c: n for c, n in counts.items()
-                                      if c != primary and n >= 4}
-                            lsb = max(others, key=others.get) if others else None
-                            found = {"channel": last_seen[primary][0], "cc": primary}
-                            if lsb is not None:
-                                # 14bitフェーダー (MSB/LSBペア) の可能性があるため併記する
-                                found["cc_lsb"] = lsb
-                    elif kind == "note" and msg.type == "note_on" and msg.velocity > 0:
-                        found = {"channel": msg.channel + 1, "note": msg.note}
-                time.sleep(0.05)
-            if found:
-                result[kind][key] = found
-                print(f"   記録: {key} -> {found}")
-            else:
-                print(f"   [未検出] {key} は記録できませんでした (後で再実行できます)")
+            while True:
+                print(f"\n>> {instruction}")
+                wait_enter("   準備ができたら Enter を押してください (押した直後から計測します)...")
+                if kind == "cc":
+                    print("   計測中 (5秒): いまフェーダーを動かしてください")
+                    found, err = learn_cc(port, used_cc)
+                else:
+                    print("   計測中: いまボタンを押してください")
+                    found, err = learn_note(port), None
+                if found:
+                    print(f"   記録: {key} -> {found}")
+                    ans = ""
+                    try:
+                        ans = input("   これでOKですか? [Enter=OK / r=やり直し]: ").strip().lower()
+                    except EOFError:
+                        ans = ""
+                    if ans == "r":
+                        continue
+                    result[kind][key] = found
+                    if kind == "cc":
+                        used_cc.add((found["channel"], found["cc"]))
+                    break
+                print(f"   [未検出] {err or '信号が来ませんでした'}。もう一度試します")
     os.makedirs(MAPS_DIR, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", port_name).strip("_") or "device"
     profile_path = os.path.join(MAPS_DIR, safe + ".json")

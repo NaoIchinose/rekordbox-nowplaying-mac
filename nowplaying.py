@@ -77,46 +77,52 @@ tell application "System Events"
 		set winPos to position of bestWin
 		set winSize to size of bestWin
 		set out to "WIN\t" & (item 1 of winPos) & "\t" & (item 2 of winPos) & "\t" & (item 1 of winSize) & "\t" & (item 2 of winSize)
-		set elems to entire contents of bestWin
-		repeat with el in elems
+		-- デッキ要素はすべて group 2 の直接の子 (実機プローブで確認)。
+		-- 要素を1つずつ読むと1回約0.5〜0.9秒かかるが、一括指定子なら一瞬で返る。
+		try
+			set g2 to group 2 of bestWin
+		on error
+			return "NOG2"
+		end try
+		try
+			set vals to value of every static text of g2
+			set poss to position of every static text of g2
+		on error
+			return "BULKFAIL"
+		end try
+		repeat with i from 1 to count of vals
 			try
-				set r to role of el
-			on error
-				set r to ""
-			end try
-			if r is "AXStaticText" or r is "AXTextField" or r is "AXTextArea" or r is "AXButton" then
-				try
-					set n to name of el
-				on error
-					set n to ""
-				end try
-				try
-					set v to value of el
-				on error
-					set v to ""
-				end try
-				if n is missing value then set n to ""
-				if v is missing value then set v to ""
-				if n is not "" or v is not "" then
-					try
-						set p to position of el
-						set px to item 1 of p
-						set py to item 2 of p
-					on error
-						set px to -1
-						set py to -1
-					end try
-					set out to out & linefeed & r & "\t" & n & "\t" & v & "\t" & px & "\t" & py
+				set v to item i of vals
+				if class of v is string and v is not "" and v is not "有効" and v is not "無効" then
+					set p to item i of poss
+					set out to out & linefeed & "AXStaticText\t" & v & "\t" & (item 1 of p) & "\t" & (item 2 of p)
 				end if
-			end if
+			end try
 		end repeat
+		try
+			set tvals to value of every text area of g2
+			set tposs to position of every text area of g2
+			repeat with i from 1 to count of tvals
+				try
+					set v to item i of tvals
+					if class of v is string and v is not "" then
+						set p to item i of tposs
+						set out to out & linefeed & "AXTextArea\t" & v & "\t" & (item 1 of p) & "\t" & (item 2 of p)
+					end if
+				end try
+			end repeat
+		end try
 		return out
 	end tell
 end tell
 '''
 
 TIME_RE = re.compile(r"^-?\d{1,2}:\d{2}(\.\d)?$")
+FRAC_RE = re.compile(r"^\.\d$")
 BPM_RE = re.compile(r"^(\d{2,3}\.\d{2})$")
+# キー表記は楽曲のメタデータ依存で混在する (Em / Bbm / 8A / 12B / 12M 等)
+KEY_RE = re.compile(r"^([A-G](#|b)?m?|(?:1[0-2]|[1-9])[ABMD])$")
+LABEL_TEXTS = {"MIX", "LEVEL", "%", "MASTER", "TEMPO", "rekordbox"}
 
 
 def time_to_seconds(t):
@@ -172,25 +178,31 @@ _faders = {"ch1": None, "ch2": None, "cross": None}
 
 def fetch_elements():
     p = subprocess.run(["osascript", "-e", FETCH_SCRIPT],
-                       capture_output=True, text=True, timeout=20)
+                       capture_output=True, text=True, timeout=30)
     out = (p.stdout or "").strip()
     if not out or out == "NORUN":
         return None, "rekordbox-not-running"
     if out == "NOWIN":
         return None, "no-window"
+    if out in ("NOG2", "BULKFAIL"):
+        return None, "fetch-" + out.lower()
     win, items = None, []
+    seen = set()
     for ln in out.splitlines():
         parts = ln.split("\t")
         if parts[0] == "WIN" and len(parts) == 5:
             win = tuple(int(float(x)) for x in parts[1:5])
-        elif len(parts) == 5:
-            role, name, value, xs, ys = parts
+        elif len(parts) >= 4:
+            role = parts[0]
             try:
-                x, y = int(float(xs)), int(float(ys))
+                x, y = int(float(parts[-2])), int(float(parts[-1]))
             except ValueError:
                 x, y = -1, -1
-            text = (value or name or "").strip()
-            if text:
+            text = "\t".join(parts[1:-2]).strip()
+            sig = (role, text, x, y)
+            if text and sig not in seen:
+                # 実機では同一要素が二重に列挙されることがあるため重複を除く
+                seen.add(sig)
                 items.append({"role": role, "text": text, "x": x, "y": y})
     if win is None:
         return None, "parse-error"
@@ -198,35 +210,71 @@ def fetch_elements():
 
 
 def parse_decks(win, items):
+    """実機 (Rekordbox 7 / 2Deck Horizontal) のダンプで較正した抽出ルール。
+
+    - デッキ境界はウィンドウ中央 (ボタンにラベルが無く、SYNCアンカーは使えない)
+    - タイトル/時間/BPM/キーはデッキヘッダー帯 (上端+150〜+300) にある
+    - アーティストはタイトルの真下 (2行目) に出ることがある
+    - 時間の小数部 (.2 等) は独立要素なので、直前の mm:ss 要素に結合する
+    - BPMはテンポ帯 (上端+330〜+440) の数値が実際の再生BPM。ヘッダー数値は予備
+    """
     wx, wy, ww, wh = win
-    band_bottom = wy + wh * float(CFG["deck_band_ratio"])
-    # BEAT SYNCボタン等のアンカーが2つ取れたら、その中点をデッキ境界にする (元ツールの幾何アンカー方式)
-    anchors = sorted(
-        [it for it in items if it["role"] == "AXButton" and "SYNC" in it["text"].upper()],
-        key=lambda it: it["x"])
-    if len(anchors) >= 2:
-        mid_x = (anchors[0]["x"] + anchors[-1]["x"]) / 2
-    else:
-        mid_x = wx + ww / 2
-    texts_only = [it for it in items if it["role"] != "AXButton"]
+    mid_x = wx + ww / 2
+    head_top, head_bottom = wy + 150, wy + 300
+    tempo_top, tempo_bottom = wy + 330, wy + 440
+    text_roles = ("AXStaticText", "AXTextField", "AXTextArea")
     decks = {}
     for deck_no, in_zone in ((1, lambda x: x < mid_x), (2, lambda x: x >= mid_x)):
-        zone = [it for it in texts_only
-                if wy <= it["y"] <= band_bottom and it["x"] >= wx and in_zone(it["x"])]
-        times, bpms, texts = [], [], []
-        for it in zone:
-            t = it["text"]
-            if TIME_RE.match(t):
+        zone = [it for it in items
+                if it["role"] in text_roles and it["x"] >= wx and in_zone(it["x"])]
+        head = [it for it in zone if head_top <= it["y"] <= head_bottom]
+        fracs = [it for it in head if FRAC_RE.match(it["text"])]
+        times = []
+        for it in head:
+            if TIME_RE.match(it["text"]):
+                t = it["text"]
+                near = [f for f in fracs
+                        if abs(f["y"] - it["y"]) <= 4 and 0 < f["x"] - it["x"] <= 70]
+                if near:
+                    t += min(near, key=lambda f: f["x"] - it["x"])["text"]
                 times.append(t)
-            elif BPM_RE.match(t) and 50.0 <= float(t) <= 220.0:
-                bpms.append(t)
-            elif len(t) >= 2:
-                texts.append(it)
-        texts.sort(key=lambda it: (it["y"], it["x"]))
+        bpm = None
+        tempo_cands = [it for it in zone
+                       if tempo_top <= it["y"] <= tempo_bottom
+                       and BPM_RE.match(it["text"])
+                       and 50.0 <= float(it["text"]) <= 220.0]
+        if tempo_cands:
+            bpm = float(min(tempo_cands, key=lambda z: z["y"])["text"])
+        key, head_bpms, texts = None, [], []
+        for it in sorted(head, key=lambda z: (z["y"], z["x"])):
+            t = it["text"]
+            if TIME_RE.match(t) or FRAC_RE.match(t):
+                continue
+            if KEY_RE.match(t):
+                if key is None:
+                    key = t
+                continue
+            if BPM_RE.match(t) and 50.0 <= float(t) <= 220.0:
+                head_bpms.append(float(t))
+                continue
+            if t in LABEL_TEXTS or len(t) < 2 or re.match(r"^±\d+$", t):
+                continue
+            texts.append(it)
+        if bpm is None and head_bpms:
+            bpm = head_bpms[0]
+        title = texts[0]["text"] if texts else None
+        artist = None
+        if texts:
+            title_y = texts[0]["y"]
+            for it in texts[1:]:
+                if it["y"] >= title_y + 10:
+                    artist = it["text"]
+                    break
         deck_info = {
-            "title": texts[0]["text"] if texts else None,
-            "artist": texts[1]["text"] if len(texts) > 1 else None,
-            "bpm": bpms[0] if bpms else None,
+            "title": title,
+            "artist": artist,
+            "bpm": bpm,
+            "key": key,
             "times": times,
         }
         deck_info.update(parse_times(times))
@@ -278,9 +326,15 @@ def compute_on_air(decks):
 
 
 def poll_loop():
+    last_fetch_log = 0.0
     while True:
         try:
+            t0 = time.time()
             got, err = fetch_elements()
+            dur = time.time() - t0
+            if dur > 5 and time.time() - last_fetch_log > 30:
+                print(f"[fetch] 画面読み取りに {dur:.1f} 秒かかっています")
+                last_fetch_log = time.time()
             if err:
                 with state_lock:
                     state["status"] = err
@@ -316,6 +370,10 @@ def poll_loop():
         except subprocess.TimeoutExpired:
             with state_lock:
                 state["status"] = "fetch-timeout"
+            if time.time() - last_fetch_log > 30:
+                print("[fetch] 画面読み取りが60秒を超えました (タイムアウト)")
+                last_fetch_log = time.time()
+            time.sleep(5)  # 要求を積み上げないよう少し空ける
         except Exception as e:
             with state_lock:
                 state["status"] = f"error:{e}"
@@ -454,17 +512,21 @@ def _match_profile(profiles, port_name):
 
 
 def _midi_session(mido, port_name, mmap):
+    # FLX4のように「同じ番号・別チャンネル」で送る機種があるため、
+    # CC/ノートは必ず (チャンネル, 番号) の組で引く (チャンネルは mido の 0 始まり)
     cc_map = {}
     for k, v in mmap.get("cc", {}).items():
-        cc_map[v["cc"]] = (k, "msb")
+        ch = v.get("channel", 1) - 1
+        cc_map[(ch, v["cc"])] = (k, "msb")
         if v.get("cc_lsb") is not None:
-            cc_map[v["cc_lsb"]] = (k, "lsb")
-    note_map = {v["note"]: k for k, v in mmap.get("note", {}).items()}
+            cc_map[(ch, v["cc_lsb"])] = (k, "lsb")
+    note_map = {(v.get("channel", 1) - 1, v["note"]): k
+                for k, v in mmap.get("note", {}).items()}
     _raw = {}
     with mido.open_input(port_name) as port:
         for msg in port:
-            if msg.type == "control_change" and msg.control in cc_map:
-                key, part = cc_map[msg.control]
+            if msg.type == "control_change" and (msg.channel, msg.control) in cc_map:
+                key, part = cc_map[(msg.channel, msg.control)]
                 if key in _faders:
                     raw = _raw.setdefault(key, {})
                     raw[part] = msg.value
@@ -473,8 +535,8 @@ def _midi_session(mido, port_name, mmap):
                         _faders[key] = ((raw["msb"] << 7) | raw["lsb"]) / 16383.0 * 127.0
                     else:
                         _faders[key] = raw.get("msb", msg.value)
-            elif msg.type == "note_on" and msg.velocity > 0 and msg.note in note_map:
-                key = note_map[msg.note]
+            elif msg.type == "note_on" and msg.velocity > 0 and (msg.channel, msg.note) in note_map:
+                key = note_map[(msg.channel, msg.note)]
                 if key == "play1":
                     _midi_playing[1] = not bool(_midi_playing[1])
                 elif key == "play2":
@@ -534,6 +596,7 @@ def push_loop():
     if room:
         # DJごとの部屋分け: relay_url に ?room=<dj名> を付けて送る
         url += ("&" if "?" in url else "?") + "room=" + urllib.parse.quote(room)
+    last_log = 0.0
     while True:
         try:
             with state_lock:
@@ -541,10 +604,17 @@ def push_loop():
             req = urllib.request.Request(
                 url, data=payload, method="POST",
                 headers={"Content-Type": "application/json",
-                         "X-Token": CFG.get("relay_token", "")})
+                         "X-Token": CFG.get("relay_token", ""),
+                         # Cloudflareが Python-urllib のUAを403で弾くため必須 (実測で確認)
+                         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                       "Chrome/126.0 Safari/537.36"})
             urllib.request.urlopen(req, timeout=5).read()
-        except Exception:
-            pass  # 中継先に届かない間もローカル配信は続ける
+        except Exception as e:
+            # 失敗を握り潰さない (本番で無音障害にならないよう、間引いて表示する)
+            if time.time() - last_log > 20:
+                print(f"[push] 送信失敗: {e} (config.json の relay_token を確認してください)")
+                last_log = time.time()
         time.sleep(float(CFG["push_seconds"]))
 
 
